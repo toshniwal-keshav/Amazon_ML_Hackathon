@@ -279,3 +279,88 @@ Phase 3 — `src/models/logreg.py` `BaselineLogisticRegression`.
 ### Next
 Phase 4 — `src/models/lightgbm_model.py` `LightGBMClassifierWrapper` with monotonic
 constraints on similarity features.
+
+---
+
+## 2026-09-25 — Phase 4 · LightGBM + Monotonic Constraints
+
+**Status:** COMPLETE
+
+### Environment blocker resolved (no root, no system modification)
+`lightgbm` was absent. `pip install lightgbm` succeeded (4.7.0, prebuilt manylinux wheel,
+authorized by the master directive), but importing it then failed:
+
+```
+OSError: libgomp.so.1: cannot open shared object file: No such file or directory
+```
+
+LightGBM's wheel links against the GNU OpenMP runtime, which this WSL image does not ship.
+`apt-get install libgomp1` was **not** an option: the session runs as uid 1000, so there is
+no root. Resolution, in order of preference:
+
+1. `scripts/fetch_opensmp_runtime.sh` downloads the official Ubuntu 24.04 `libgomp1`
+   package (`libgomp1_14.2.0-4ubuntu2~24.04.1_amd64.deb`) and extracts it with
+   `dpkg-deb -x` into `.vendor/libgomp/` — no root, no system change.
+2. The extracted `libgomp.so.1.0.0` (344 KB) is **committed** to the repo, so
+   `pytest tests/ -v` works on a fresh clone with no system changes at all.
+3. `_import_lightgbm()` in `src/models/lightgbm_model.py` tries the **normal import first**,
+   so a host with a system OpenMP runtime always uses its own copy. Only on `OSError` does
+   it `ctypes.CDLL(..., RTLD_GLOBAL)` the vendored library, purge the half-initialised
+   `lightgbm` modules from `sys.modules`, and retry.
+
+Verified end to end: `lightgbm 4.7.0` imports and trains with **no `LD_LIBRARY_PATH` and no
+environment variable of any kind**, and the fetch script is idempotent on re-run.
+
+### Delivered
+- `src/models/lightgbm_model.py`:
+  - `LightGBMClassifierWrapper` — `binary` / `binary_logloss`, early stopping on validation
+    average-precision or logloss, native NaN handling, joblib `save`/`load`.
+  - `MONOTONIC_SIMILARITY_COLUMNS` = `name_char_cos`, `name_token_set`, `name_token_sort`,
+    `name_contain_idf`, `addr_char_cos`, `addr_contain_idf`, `addr_numeric_jaccard`,
+    `best_score`, each constrained to `+1` via `monotone_constraints_method="advanced"`.
+  - `build_monotonic_constraints()` / `constrained_feature_names()` /
+    `get_monotonic_constraints()` to report the constraint actually applied.
+  - `select_feature_columns()` with the identifier/metadata blocklist.
+- `tests/test_lightgbm.py` — 17 tests.
+- `scripts/fetch_opensmp_runtime.sh`.
+- `code/business_entity_resolution/requirements.txt` — was empty; now pins the verified
+  versions (P3-relevant subset, additive only).
+
+### Results
+- `.venv/bin/python -m pytest tests/ -q` → **62 passed** (20 baseline + 42 new).
+
+### Decisions and findings
+1. **Monotonic constraints are on by default.** An initial bug made `monotone_constraints`
+   default to *no* constraints, which silently defeated the whole point of the phase. The
+   default is now `MONOTONIC_SIMILARITY_COLUMNS`; `monotone_constraints=[]` is the
+   explicit opt-out used only by the control test.
+2. **Only genuine similarity columns are constrained.** `addr_numeric_conflict`,
+   `name_len_diff` and `n_routes` are deliberately left free: "more routes" or "larger
+   length difference" is not monotonically related to matching, and forcing a direction on
+   them would inject a false prior.
+3. **The monotonicity test bug was mine, not LightGBM's.** The test initially reported a
+   catastrophic -0.997 probability drop on all 8 constrained features. Diagnosis: the
+   helper concatenated all reference-row curves into one array and then called `np.diff`
+   on the flattened result, so `np.diff` compared the *last* point of one curve (grid
+   maximum) against the *first* point of the next curve (grid minimum), inventing a fake
+   decrease at the seam. Fixed by stacking curves into a `(n_rows, n_points)` array and
+   taking `np.diff(..., axis=1)`. The real per-curve curves were flat or increasing
+   throughout, confirming the constraints hold. This was verified by an independent
+   standalone reproduction before the test was touched.
+4. **The monotonicity test is guarded by a control test.**
+   `test_unconstrained_model_violates_monotonicity_on_same_data` trains the same model
+   without constraints and asserts its worst drop is *worse* than the constrained model's.
+   Without this, a vacuously monotone model would let the main test pass for the wrong
+   reason. The control passes, so the constraint is demonstrably doing work.
+5. **LightGBM 4.7 renamed the evaluation arguments.** `eval_set` now emits
+   `LGBMDeprecationWarning`; `eval_X`/`eval_y` are the supported spellings and are used
+   instead. `eval_X` rejects a list of DataFrames, so a single validation set is passed
+   unwrapped. The test suite is now warning-clean apart from the two deliberate
+   all-`NaN`-column imputer warnings.
+6. **Native NaN handling, no imputation.** Required by the master plan: Example 71 is a
+   true match with a blank address, and a blank must be learned from other evidence
+   rather than median-imputed into a mid-range similarity. Asserted by
+   `test_native_nan_support_for_missing_address_and_country`.
+
+### Next
+Phase 5 — `src/models/train_cv.py` 5-fold CV runner and OOF `scores.parquet`.

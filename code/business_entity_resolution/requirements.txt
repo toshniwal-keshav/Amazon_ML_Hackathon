@@ -1,0 +1,27 @@
+# Runtime dependencies, pinned to the versions this pipeline was verified against.
+# P3 (ML / validation / models / decision) requirements.
+#
+# Verified on: Python 3.12.3, Ubuntu 24.04 (noble), x86_64.
+
+# Data frames and numeric types.
+numpy==2.5.3
+pandas==3.0.6
+
+# Validation, models and evaluation.
+scikit-learn==1.9.1
+scipy==1.18.1
+lightgbm==4.7.0
+
+# Artifact IO (folds.parquet, scores.parquet, train_labels.parquet).
+pyarrow==25.0.1
+
+# Model persistence.
+joblib==1.6.0
+
+# Tests.
+pytest==9.1.1
+
+# NOTE: lightgbm's manylinux wheel links against libgomp.so.1 (GNU OpenMP). Hosts
+# without a system OpenMP runtime need the committed fallback in .vendor/libgomp,
+# which src/models/lightgbm_model.py preloads automatically as a fallback.
+# See scripts/fetch_opensmp_runtime.sh.
