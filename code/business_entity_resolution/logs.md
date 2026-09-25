@@ -225,3 +225,57 @@ comma-separated ground truth to the same 7,638,365 pairs, which cross-validates 
 
 ### Next
 Phase 3 — `src/models/logreg.py` `BaselineLogisticRegression`.
+
+---
+
+## 2026-09-25 — Phase 3 · Logistic Regression Baseline
+
+**Status:** COMPLETE
+
+### Delivered
+- `src/models/logreg.py`:
+  - `BaselineLogisticRegression` with the mandated pipeline
+    `SimpleImputer(median)` → `StandardScaler()` →
+    `LogisticRegression(class_weight="balanced", max_iter=1000, random_state=42)`.
+  - `fit(X, y)`, `predict_proba(X) -> np.ndarray`, `predict(X)`,
+    `get_feature_importance() -> pd.DataFrame`, `save`/`load` via joblib.
+  - `select_feature_columns(df)` plus a `NON_FEATURE_COLUMNS` blocklist that excludes
+    `pair_key`, `s1_id`, `candidate_id`, `candidate_source`, raw text, `country`,
+    `fold_id`, `is_oof`, `model_version` and the score columns.
+- `tests/test_logreg.py` — 14 tests.
+
+### Results
+- `.venv/bin/python -m pytest tests/ -q` → **45 passed** (20 baseline + 25 new).
+
+### Decisions and findings
+1. **Identifier columns can never reach the model.** A unique id is a perfect predictor and
+   a completely useless one, so the blocklist is enforced in code and asserted by
+   `test_identifier_columns_are_never_used_as_features` rather than left to caller
+   discipline.
+2. **A fitted column order is enforced, not assumed.** `predict_proba` reindexes a
+   DataFrame to the fitted feature order. A caller passing the same columns in a different
+   order gets identical predictions rather than silently scrambled coefficients. Asserted
+   by `test_column_order_does_not_change_predictions`.
+3. **A missing feature column at predict time raises `ValueError`**, rather than being
+   treated as NaN and imputed. A renamed or dropped upstream column is a pipeline bug and
+   must not be absorbed by the imputer.
+4. **`inf` is rejected, not imputed.** `SimpleImputer` raises on infinity/overflow input.
+   This was found by a test that initially over-claimed robustness. Infinity is a
+   feature-construction bug rather than a missing value, and coercing it to NaN would hide
+   the bug upstream. The behaviour is now asserted deliberately in
+   `test_non_finite_input_is_rejected_loudly` so it is not "fixed" later.
+5. **An all-`NaN` column is filled with `0.0` and warns.** A column entirely missing in a
+   training fold has no median. This is exactly the blank-address / missing-country case
+   from the master plan (Example 71's blank-address true match), so the `UserWarning` is
+   deliberately left visible instead of suppressed. Documented in the module docstring.
+6. `get_feature_importance` returns standardized coefficients sorted by absolute magnitude.
+   They are only comparable because the scaler runs first; raw coefficients on unscaled
+   features would be meaningless across columns of different units.
+7. Class balance: the fixture is imbalanced (67 positives / 112 negatives) and
+   `class_weight="balanced"` is required for the model to predict both classes at all
+   rather than collapsing to "not a match". On the real data the equivalent collapse is
+   the 0.0558 predict-nothing floor.
+
+### Next
+Phase 4 — `src/models/lightgbm_model.py` `LightGBMClassifierWrapper` with monotonic
+constraints on similarity features.
