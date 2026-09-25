@@ -141,6 +141,14 @@ Invariants:
 - The model producing fold `k`'s scores is never trained on fold `k`.
 - Row count equals the candidate row count.
 
+**Writer note.** Write this file with `src/models.train_cv.write_scores_parquet()`, which
+passes an explicit Arrow schema. Do not use a bare `pa.Table.from_pandas(scores)`: pandas
+3.x stores text columns as `StringDtype`, which pyarrow maps to `large_string` (64-bit
+offsets) rather than the contracted `string` (32-bit). The artifact would then silently
+disagree with this document, and Person 4's loader and validator would be written against a
+schema nobody produces. `folds.parquet` has the same constraint and is written with
+explicit `pa.string()` / `pa.int8()` types in `src/validation/splits.py::folds_to_parquet`.
+
 ---
 
 ## 6. `artifacts/decision_config.json` (Phase 6)

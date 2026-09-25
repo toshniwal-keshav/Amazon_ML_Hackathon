@@ -364,3 +364,56 @@ environment variable of any kind**, and the fetch script is idempotent on re-run
 
 ### Next
 Phase 5 — `src/models/train_cv.py` 5-fold CV runner and OOF `scores.parquet`.
+
+---
+
+## 2026-09-25 — Phase 5 · 5-Fold CV Runner & OOF Scores
+
+**Status:** COMPLETE
+
+### Delivered
+- `src/models/train_cv.py`:
+  - `train_cv(features_df, labels_df, folds_df, model_cls, model_params, n_folds=5,
+    model_version="model_v1", expected_folds=None) -> tuple[pd.DataFrame, list]`
+  - `prepare_training_frame(features_df, labels_df, folds_df)` — validated join producing
+    one row per candidate pair carrying `y` and `fold_id`.
+  - `SCORES_COLUMNS` / `SCORES_ARROW_SCHEMA` / `write_scores_parquet(scores_df, path)`.
+  - `coverage_report(scores_df, frame)` for run logging.
+- `tests/test_train_cv.py` — 11 tests.
+
+### Results
+- `.venv/bin/python -m pytest tests/ -q` → **73 passed** (20 baseline + 53 new).
+- Synthetic run: 179 candidate rows in → 179 OOF score rows out, one per `pair_key`, all
+  `is_oof=True`, spread over 5 folds; each model trained on exactly the other 4 folds.
+
+### Decisions and findings
+1. **Leakage is structurally impossible, not merely tested for.** Folds are joined at the
+   S1 entity level, so a pair's fold is a property of its entity. The training frame for
+   fold `k` is built from a boolean mask excluding fold `k`, and the test asserts that
+   fold `k` is absent from its own training fold set and that exactly 4 folds are present.
+   No later feature or join step can reintroduce the held-out rows.
+2. **A fold coverage gap raises instead of silently shrinking the training set.** If an S1
+   entity in the candidate set has no `fold_id`, `train_cv` raises naming the entity count.
+   A silent drop here would quietly remove training data and inflate every score computed
+   from it. Covered by `test_every_s1_entity_present_in_folds_or_raises`.
+3. **pandas 3.0 would have broken the `scores.parquet` contract.** pandas 3.x stores text
+   columns as `StringDtype`, which pyarrow maps to Arrow `large_string` (64-bit offsets),
+   not the contracted `string` (32-bit). A bare `pa.Table.from_pandas(scores)` therefore
+   produces an artifact that disagrees with `docs/schemas.md`, and Person 4's loader and
+   validator would end up written against a schema nobody produces. Fixed by enforcing the
+   schema at the write boundary: `SCORES_ARROW_SCHEMA` + `write_scores_parquet()`, with a
+   test asserting the written file's schema field-for-field. Noted in `docs/schemas.md`.
+4. **`p_cal` currently equals `p_raw` and is documented as such.** No calibrator is fitted
+   yet; writing a pretended calibrated column would misrepresent the artifact. Fitting an
+   isotonic/sigmoid calibrator on OOF predictions is the natural follow-up and belongs in
+   this module so it is only ever fitted on OOF data.
+5. **`expected_folds` parameter added** so Phase 7's LOCO harness can reuse this exact
+   leak-free splitting logic over country slices instead of reimplementing it.
+6. `random_state=42` is injected only when the model class accepts it, so every seeded
+   model stays reproducible without breaking models that do not take the argument.
+7. Test dtype assertions were corrected from `object` to `pd.api.types.is_string_dtype(...)`
+   for pandas 3.x, which was a test bug rather than an implementation problem.
+
+### Next
+Phase 6 — `src/decision/threshold.py` global and two-threshold tuning, decision rules, and
+`artifacts/decision_config.json`.
