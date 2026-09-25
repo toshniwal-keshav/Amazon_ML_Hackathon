@@ -1,4 +1,6 @@
 dataset/
+artifacts/
+planning/
 __pycache__/
 *.pyc
 output/*.tsv
