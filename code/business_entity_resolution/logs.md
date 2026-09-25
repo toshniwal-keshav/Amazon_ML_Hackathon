@@ -417,3 +417,77 @@ Phase 5 — `src/models/train_cv.py` 5-fold CV runner and OOF `scores.parquet`.
 ### Next
 Phase 6 — `src/decision/threshold.py` global and two-threshold tuning, decision rules, and
 `artifacts/decision_config.json`.
+
+---
+
+## 2026-09-25 — Phase 6 · Precision Decision Layer & Two-Threshold Tuning
+
+**Status:** COMPLETE
+
+### Delivered
+- `src/decision/__init__.py`
+- `src/decision/threshold.py`:
+  - `tune_global_threshold(oof_scores_df, ground_truth_by_s1) -> float` — grid search on
+    macro-F0.5, ties resolved to the lower (more conservative) threshold.
+  - `tune_two_thresholds(oof_scores_df, ground_truth_by_s1) -> tuple[float, float]` —
+    grid search over ``(T1, T2)`` with ``T2 >= T1`` enforced by default.
+  - `apply_decision_rules(scores_df, t1, t2, enable_reverse_consistency=False,
+    score_column="p_cal") -> dict[str, set[str]]`
+  - `evaluate_thresholds`, `report_decision`, `build_decision_config`,
+    `save_decision_config` / `load_decision_config` for `artifacts/decision_config.json`.
+- `tests/test_decision.py` — 21 tests.
+
+### Results
+- `.venv/bin/python -m pytest tests/ -q` → **94 passed** (20 baseline + 74 new).
+- Full suite runtime 12.3s.
+
+### The metric asymmetry that drives this design
+F0.5 weights precision 4x recall, and the metric is macro-averaged over every S1 entity
+including the 123,247 zero-match ones. A false match on a true singleton forfeits a full
+1.0 of that entity's score. On a non-singleton with one true match, adding a wrong
+candidate costs 1.0 → 0.67, while dropping the true match costs 1.0 → 0.0. Both errors are
+expensive and neither is uniformly worse, so the layer is built around explicit abstention
+rather than a fixed bias. Two tests pin this behaviour down:
+`test_abstaining_everywhere_scores_the_singleton_floor` and
+`test_false_positive_on_singleton_is_catastrophic`.
+
+### Decisions and findings
+1. **The grid includes a "predict nothing" threshold** (`max_score + 1e-6`). Abstaining
+   everywhere is a legitimate option worth 0.0558 on the real data, and a grid that
+   excluded it could never choose to stay silent.
+2. **Non-OOF scores are refused.** Both tuning functions raise if any row has
+   `is_oof=False`, because the whole point of OOF is that the threshold search cannot see
+   scores from rows the model memorised.
+3. **`T1 = T2` reduces exactly to global thresholding**, so the single-threshold baseline
+   stays available for comparison, and
+   `test_two_threshold_is_at_least_as_good_as_global` asserts the two-threshold search
+   space (which contains the global one) never scores worse.
+4. **`T2 >= T1` is enforced by default.** The entry bar should not be stricter than the
+   continuation bar; the reverse ordering is what makes "accept one strong candidate,
+   demand more for the rest" expressible. `require_t2_ge_t1=False` remains available for
+   experiments.
+5. **Tie-breaks are deterministic.** Candidates are sorted by descending score then
+   ascending candidate id, so equal scores resolve identically regardless of input row
+   order. Verified by two order-independence tests.
+6. **Predictions are sets, so duplicates cannot inflate a score**, and a duplicated
+   candidate row produces no extra id.
+7. **The tuning hot loop was made linear and verified equivalent to the reference.** The
+   naive implementation re-ran `groupby` + `sort_values` for each of up to 201x201 grid
+   points: 31s on the 179-row fixture, and hours on a real candidate volume. Because
+   candidates are sorted by descending score, the rule collapses to a closed form — an
+   entity contributes all candidates with `score >= T2` when its best score reaches
+   `max(T1, T2)`, otherwise nothing — so sorting happens once and each grid point is
+   `searchsorted` plus set building. **Decision tests: 31.15s → 1.87s.** The readable
+   row-by-row `apply_decision_rules` is kept as the reference implementation, and
+   `test_fast_path_matches_reference_implementation` asserts the two are *exactly* equal
+   across a spread of thresholds and both threshold orderings, so the optimisation cannot
+   silently drift.
+8. **`enable_reverse_consistency` is a documented no-op without the column.** Rather than
+   silently changing behaviour, the flag filters only when a `retrieved_reverse` column is
+   actually present, and the frozen config still records the requested value so the
+   decision is auditable.
+9. `p_cal`/`p_raw` are interchangeable for tuning (`score_column` parameter, default
+   `p_cal`) because no calibrator is fitted yet.
+
+### Next
+Phase 7 — `src/validation/loco.py` LOCO cross-country robustness harness.
