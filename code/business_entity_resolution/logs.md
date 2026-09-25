@@ -491,3 +491,89 @@ rather than a fixed bias. Two tests pin this behaviour down:
 
 ### Next
 Phase 7 — `src/validation/loco.py` LOCO cross-country robustness harness.
+
+---
+
+## 2026-09-25 — Phase 7 · LOCO Cross-Country Robustness Diagnostic
+
+**Status:** COMPLETE
+
+### Delivered
+- `src/validation/loco.py`:
+  - `prepare_loco_frame(features_df, labels_df, countries_by_s1)` — assembles the joined
+    training frame with the training country of each S1 entity attached.
+  - `run_loco_direction(frame, train_country, test_country, model_cls, ...)` — trains on
+    one country, scores the other, returns a structured result.
+  - `run_loco_evaluation(...)` — both directions plus an aggregate summary.
+  - `format_loco_report(report)` — readable block for the log and console.
+- `tests/test_loco.py` — 18 tests.
+
+### Results
+- `.venv/bin/python -m pytest tests/ -q` → **112 passed** (20 baseline + 92 new).
+- `src/validation/metrics.py`, `src/validation/splits.py`, `tests/test_splits.py` and
+  `tests/test_metrics.py` diff: **empty**.
+- End-to-end synthetic run:
+
+```
+   train     test  train rows  test rows      t1      t2  untuned F0.5    tuned*  singleton FP
+      US    India          49         62  0.0018  0.1510        0.9874    1.0000             0
+   India       US          62         49  0.0041  0.6008        0.9902    1.0000             0
+untuned macro-F0.5 across directions: mean 0.9888, min 0.9874, max 0.9902
+```
+
+**These numbers are not evidence of real cross-country robustness.** The synthetic
+fixture gives true matches a deliberate +0.15 similarity boost, which makes the task
+trivially separable, so ~0.99 here only demonstrates the harness runs and leaks nothing.
+The real judgement has to wait for P1/P2.
+
+### Decisions and findings
+1. **LOCO is a diagnostic, never a model-selection tool, and reports two columns.** Its
+   thresholds are fitted on the held-out country's own scores, so the `tuned*` macro-F0.5
+   is optimistic by construction and unusable for comparing models. A fixed untuned 0.5
+   score is reported alongside it, and that one *is* comparable across directions. Which
+   column a reader reaches for is the whole point of the module, so the printed table
+   carries the asterisk warning.
+2. **The module is structurally denied the ability to write artifacts.**
+   `test_loco_module_cannot_freeze_a_decision_config` asserts `loco.py` never references
+   `save_decision_config`, `load_decision_config` or `write_scores_parquet`. A diagnostic
+   that could emit a frozen config would eventually be used to do exactly that.
+3. **The anti-leak guarantee is asserted on the fit frame, not inferred.** The test model
+   wraps the real `BaselineLogisticRegression` and records the exact rows it was fitted
+   on, then asserts the fit contains `train_country` and never the held-out country, and
+   that the `country` column is not offered to the model as a feature. Real probabilities
+   are kept so threshold behaviour stays meaningful; only the recorded fit frame is new.
+4. **A missing country is reported, not raised.** A direction over an absent country
+   returns `{"skipped": True, "reason": ...}` and the run continues, because a missing
+   data slice is a fact to report. The same applies to a single-class training slice,
+   which raises a specific error because that one *is* a mistake.
+5. **`n_predictions` was split into `n_predictions_tuned` / `n_predictions_untuned`.** The
+   single field was computed from the tuned decision but sat beside both score columns,
+   so a reader would reasonably attribute it to the wrong one. A test caught it.
+6. **The untuned/tuned independence is proved, not assumed.** Forcing
+   `UNTUNED_THRESHOLD` above every score must collapse the untuned column to the
+   zero-match *entity* share and emit zero predictions, while leaving the tuned column
+   unchanged. The floor is entity-level, not row-level: a zero-match entity scores 1.0
+   when abstained and any entity with a true match scores 0.0, so the two rates are not
+   interchangeable. An earlier version of this test compared against a row-level rate and
+   was simply wrong.
+7. **Country coverage is validated before frame assembly.** The assembled frame's
+   fold-coverage check fires first and blames `folds.parquet` for what is really a
+   missing country entry, so the country check runs first with its own message naming the
+   offending entities.
+8. **LOCO trains on exactly one country, matching the US→India / India→US directive.**
+   With the synthetic pool's third country (France) present, the two slices cover 111 of
+   179 candidate rows; the remainder is excluded by design and the test asserts
+   train + test is a strict subset rather than a partition, so the behaviour is recorded
+   rather than assumed. Real data has no third training country, so the two directions
+   partition it exactly.
+9. **France is not a default direction**, because it is absent from the real training
+   data and would always be skipped. The synthetic pool can exercise a France direction
+   via explicit `country_pairs`, which is asserted — proving the code slices by data
+   rather than by a hardcoded constant.
+
+### Next
+Phase 7 is the last deliverable of the current plan. Remaining work is blocked on P1
+`candidates.parquet` and P2 `features.parquet`: real OOF scores, candidate recall and
+oracle-ceiling reporting, honest global/two-threshold tuning, and a real comparison of
+logistic regression against LightGBM. Until those arrive no competition-valid number
+should be quoted.
