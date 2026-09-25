@@ -168,3 +168,60 @@ independent full runs of the script. The artifact is deterministic for
 
 ### Next
 Phase 2 — `src/models/labels.py` binary label and hard-negative builder.
+
+---
+
+## 2026-09-25 — Phase 2 · Binary Labels & Hard Negatives
+
+**Status:** COMPLETE
+
+### Delivered
+- `src/models/__init__.py`
+- `src/models/labels.py`:
+  - `build_train_labels(candidates_df, ground_truth_df, pair_key_column="pair_key")` —
+    returns exactly `pair_key` (string) and `y` (int8), one row per input candidate row in
+    input order. Membership is a single vectorized `Series.isin` call.
+  - `build_true_positive_pairs(ground_truth)` / `make_pair_key(s1, candidate)` helpers.
+  - `candidate_recall(candidates_df, ground_truth_df)` returning
+    `(covered, total, recall)` — the retrieval ceiling, required as a release gate by the
+    master plan and therefore exposed next to the label builder.
+  - Ground truth accepted in three shapes: **wide** comma-separated (the real dataset
+    layout, parsed fully vectorized via `str.split` + `explode`), **long** one-row-per-pair,
+    and **Mapping** `{s1_id: {candidate_id, ...}}` (the shape already used by the protected
+    `metrics.py` and `splits.py`).
+- `tests/test_labels.py` — 11 tests.
+
+### Results
+- `.venv/bin/python -m pytest tests/ -q` → **31 passed** (20 baseline + 11 new). No regression.
+- Synthetic fixture: 179 candidate rows in, 179 label rows out; 67 positives
+  (`y == 1`), 112 hard negatives (`y == 0`); `y` dtype `int8`; no duplicate `pair_key`;
+  no missing labels.
+
+### Real-data validation of the ground-truth parser
+`build_true_positive_pairs` was run against the actual `train_ground_truth.tsv`
+(2,206,821 rows, 123,247 of them singletons):
+
+| check | result |
+| --- | --- |
+| true positive `pair_key` count | **7,638,365** — exactly matches `generate_folds.py` |
+| parse time | 19.8s |
+| `pair_key` format | `s1_id::candidate_id` |
+| dangling keys from zero-match rows | none |
+
+Two independent code paths (`scripts/generate_folds.py` and `src/models/labels.py`) parse the
+comma-separated ground truth to the same 7,638,365 pairs, which cross-validates both.
+
+### Decisions
+- **A DataFrame ground truth must carry the correct columns even when it has no rows.**
+  A frame with the right columns and zero rows legitimately means "no true pairs" and
+  yields an all-negative label set. A frame with unrecognized columns raises `ValueError`
+  rather than silently returning all zeros, because an all-zero label set caused by
+  reading the wrong file is a catastrophic and very hard to spot failure.
+- `metrics.build_ground_truth_from_tsv` remains unused: it assumes a long one-row-per-pair
+  file with `entity_id` columns, which does not match the real wide ground-truth file. It
+  is protected by the 20/20 baseline and was left untouched. The correct parser lives in
+  `src/models/labels.py`. **This is a real trap for Person 4 — flagged here so the loader
+  is not reused at inference time.**
+
+### Next
+Phase 3 — `src/models/logreg.py` `BaselineLogisticRegression`.
