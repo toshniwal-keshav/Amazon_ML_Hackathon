@@ -1,5 +1,32 @@
+# Dataset & Raw resources
+6ab10eb3b23ba_student_resource
+6ab5628d5a817_amazon_ml_challenge_problem_statement.pdf
 dataset/
-__pycache__/
-*.pyc
-output/*.tsv
+
+tmp/
+tmp/**/*.tsv
+
+# Planning & Challenge Prompts
+amazon ml challenge/
+
+# Intermediate Artifacts & Large Binary Data (Per Master Plan Section 11A)
+artifacts/
+*.parquet
+
+# Environment & Build Staging
 .venv/
+submission_staging/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Isolated Testing Directories
+dummy test person*/
+
+# Scratch / One-off analysis scripts
+extract_match_examples.py
+script.py
+test_analysis_results.md
+test_audit.py
+training_match_examples.md
